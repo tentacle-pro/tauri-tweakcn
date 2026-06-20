@@ -2,6 +2,10 @@ use tauri::{ Manager, Emitter};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::os::unix::io::FromRawFd;
+use std::sync::{Arc, Mutex};
+
+/// 托管状态：持有 gost 子进程句柄，App 退出时由 RunEvent::Exit 负责 kill
+struct GostChild(Arc<Mutex<Option<std::process::Child>>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -88,14 +92,16 @@ pub fn run() {
                 });
             }
 
-            let mut child = cmd.spawn()
+            let child = cmd.spawn()
                 .map_err(|e| format!("failed to spawn gost: {e}"))?;
 
             // 父进程关闭读端（子进程 fork 后已持有自己的副本）
             unsafe { libc::close(read_fd); }
 
-            // 将 gost stdout 转发到 webview
-            let stdout = child.stdout.take().unwrap();
+            // 将 gost stdout 转发到 webview；退出处理通过 RunEvent::Exit 统一 kill
+            let child_arc = Arc::new(Mutex::new(Some(child)));
+            let child_for_thread = child_arc.clone();
+            let stdout = child_for_thread.lock().unwrap().as_mut().unwrap().stdout.take().unwrap();
             std::thread::spawn(move || {
                 use std::io::BufRead;
                 for line in std::io::BufReader::new(stdout).lines().flatten() {
@@ -103,10 +109,27 @@ pub fn run() {
                         .emit("message", Some(format!("'{}'", line)))
                         .ok();
                 }
-                child.wait().ok();
+                // stdout 读完后回收子进程
+                if let Some(mut c) = child_for_thread.lock().unwrap().take() {
+                    c.wait().ok();
+                }
             });
+
+            // 注册到 Tauri 状态，供 RunEvent::Exit 时 kill
+            app_handle.manage(GostChild(child_arc));
+
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app_handle.try_state::<GostChild>() {
+                    if let Some(mut c) = state.0.lock().unwrap().take() {
+                        let _ = c.kill();
+                        let _ = c.wait();
+                    }
+                }
+            }
+        });
 }
