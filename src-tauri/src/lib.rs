@@ -1,7 +1,7 @@
-use tauri_plugin_shell::ShellExt;
-use tauri_plugin_shell::process::CommandEvent;
-use tauri::path::BaseDirectory;
 use tauri::{ Manager, Emitter};
+use std::io::Write;
+use std::os::unix::process::CommandExt;
+use std::os::unix::io::FromRawFd;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -27,80 +27,83 @@ pub fn run() {
             
             let app_handle = app.handle();
             let window = app_handle.get_webview_window("main").unwrap();
-            
-            // According to dev/production environment, choose different venv_parent_path: ../api or /path/to/app/app_data_dir
-            let venv_parent_path = if cfg!(debug_assertions) {
-                // 在当前工作目录的上一级目录中寻找api文件夹
-                let mut path = std::env::current_dir().map_err(|e| e.to_string())?;
-                path.pop(); // 移动到上一级目录
-                path.push("api");
-                path
-            } else {
-                app_handle
-                .path()
-                .app_data_dir()
-                .map_err(|e| e.to_string())?
-            };
-            println!("venv_parent_path: {:?}", venv_parent_path);
-            
-            // 如果是生产环境，复制BaseDirectory::Resource/api/pyproject.toml到app_data_dir
-            if !cfg!(debug_assertions) {
-                let resource_api_path = app_handle.path().resolve("api", BaseDirectory::Resource)?;
-                let pyproject_src_path = resource_api_path.join("pyproject.toml");
-                let pyproject_dest_path = venv_parent_path.join("pyproject.toml");
-                println!("pyproject_src_path: {:?}", pyproject_src_path);
-                println!("pyproject_dest_path: {:?}", pyproject_dest_path);
-                // 总是复制文件，以便在部署新版本后能自动更新虚拟环境
-                std::fs::copy(&pyproject_src_path, &pyproject_dest_path).map_err(|e| e.to_string())?;
-        
-            }
-            
-            // 创建或更新虚拟环境
-            let sidecar_command = app
-            .shell()
-            .sidecar("uv")
-            .unwrap()
-            .args(["sync", "--directory", venv_parent_path.to_str().unwrap()]);
-            println!("Running command: {:?}", sidecar_command);
-            sidecar_command
-            .spawn()
-            .expect("Failed to spawn sidecar");
 
-            // 通过uv运行app.py
-            // 如果是开发环境app.py在../api/app.py，否则在BaseDirectory::Resource/api/app.py
-            let app_py_path = if cfg!(debug_assertions) {
-                venv_parent_path.join("app.py")
-            } else {
-                app_handle.path().resolve("api/app.py", BaseDirectory::Resource)?
-            };
-            println!("app_py_path: {:?}", app_py_path);
-            let sidecar_command = app
-            .shell()
-            .sidecar("uv")
-            .unwrap()
-            .args([
-                "run", 
-                "--directory", venv_parent_path.to_str().unwrap(),
-                app_py_path.to_str().unwrap(), 
-                "--host", "127.0.0.1", 
-                "--port", "60316"]);
-            println!("Running command: {:?}", sidecar_command);
-            let (mut rx, mut child) = sidecar_command
-            .spawn()
-            .expect("Failed to spawn sidecar");
+            // 将凭证放在 JSON 配置中通过匿名管道传递，ps(1) 只会看到 `gost -C /dev/fd/3`
+            let config_json = serde_json::json!({
+                "ServeNodes": ["socks5://admin:dynamic_pass_123@127.0.0.1:17890"],
+                "ChainNodes": ["relay+mtls://blackwidow:NqX3zj6wG3rxYwzu@80.251.216.81:65200"]
+            }).to_string();
 
-            tauri::async_runtime::spawn(async move {
-            // read events such as stdout
-            while let Some(event) = rx.recv().await {
-                if let CommandEvent::Stdout(line_bytes) = event {
-                let line = String::from_utf8_lossy(&line_bytes);
-                window
-                    .emit("message", Some(format!("'{}'", line)))
-                    .expect("failed to emit event");
-                // write to stdin
-                child.write("message from Rust\n".as_bytes()).unwrap();
+            // 创建匿名管道，并对两端设置 O_CLOEXEC（不泄漏到非预期的子进程）
+            let mut pipe_fds = [0i32; 2];
+            unsafe {
+                if libc::pipe(pipe_fds.as_mut_ptr()) != 0 {
+                    return Err("pipe() failed".into());
                 }
+                libc::fcntl(pipe_fds[0], libc::F_SETFD, libc::FD_CLOEXEC);
+                libc::fcntl(pipe_fds[1], libc::F_SETFD, libc::FD_CLOEXEC);
             }
+            let (read_fd, write_fd) = (pipe_fds[0], pipe_fds[1]);
+
+            // 写入配置后关闭写端 → 读端收到 EOF，gost 完成配置解析后继续运行
+            {
+                let mut write_file = unsafe { std::fs::File::from_raw_fd(write_fd) };
+                write_file.write_all(config_json.as_bytes())
+                    .map_err(|e| format!("failed to write gost config: {e}"))?;
+                // write_file 在此 drop → write_fd 关闭
+            }
+
+            // 解析 sidecar 二进制路径（与 Tauri sidecar 解析逻辑一致）
+            let gost_path = {
+                let exe = std::env::current_exe()?;
+                let exe_dir = exe.parent().ok_or("cannot resolve exe directory")?;
+                if cfg!(debug_assertions) {
+                    exe_dir.join("../../bin").join(
+                        format!("gost-{}-apple-darwin", std::env::consts::ARCH)
+                    )
+                } else {
+                    // 打包后 externalBin 与主程序同目录（MacOS/）
+                    exe_dir.join("gost")
+                }
+            };
+            println!("gost binary: {:?}", gost_path);
+
+            // 启动 gost，命令行仅含 `-C /dev/fd/3`，不暴露任何凭证
+            let mut cmd = std::process::Command::new(&gost_path);
+            cmd.args(["-C", "/dev/fd/3"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped());
+
+            // fork 后、exec 前：将 read_fd dup2 到 fd 3
+            // dup2 的目标 fd 不继承 O_CLOEXEC，exec 后 fd 3 保持打开供 gost 读取
+            unsafe {
+                cmd.pre_exec(move || {
+                    if libc::dup2(read_fd, 3) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if read_fd != 3 {
+                        libc::close(read_fd);
+                    }
+                    Ok(())
+                });
+            }
+
+            let mut child = cmd.spawn()
+                .map_err(|e| format!("failed to spawn gost: {e}"))?;
+
+            // 父进程关闭读端（子进程 fork 后已持有自己的副本）
+            unsafe { libc::close(read_fd); }
+
+            // 将 gost stdout 转发到 webview
+            let stdout = child.stdout.take().unwrap();
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(stdout).lines().flatten() {
+                    window
+                        .emit("message", Some(format!("'{}'", line)))
+                        .ok();
+                }
+                child.wait().ok();
             });
             Ok(())
         })
