@@ -1,30 +1,7 @@
 import "./index.css";
 import { create } from "zustand"
 import { Toaster } from "@/components/ui/sonner"
-import { SidebarProvider } from "@/components/ui/sidebar"
-import { AppSidebar } from "./app-sidebar"
-import { AppWorkspace } from "./app-workspace"
-import { SettingsDialog } from "./settings-dialog"
-
-// 创建一个store来管理页面内容
-interface PageState {
-  currentPage: string
-  currentTitle: string
-  currentSubtitle: string
-  setPage: (page: string, title: string, subtitle: string) => void
-}
-
-export const usePageStore = create<PageState>((set) => ({
-  currentPage: "new_task", // 默认为new_task页面，会在组件中根据是否首次启动进行调整
-  currentTitle: "新建任务",
-  currentSubtitle: "新建数据任务",
-  setPage: (page, title, subtitle) =>
-    set({
-      currentPage: page,
-      currentTitle: title,
-      currentSubtitle: subtitle,
-    }),
-}))
+import { Player } from "./player"
 
 // 创建一个store来管理设置对话框状态
 interface SettingsState {
@@ -43,11 +20,13 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 
 export default function Page() {
   return (
-    <SidebarProvider>
-      <AppSidebar />
-      <AppWorkspace />
+    // <SidebarProvider>
+      // <AppSidebar />
+      <>
+      <Player />
       <Toaster />
-      <SettingsDialog />
-    </SidebarProvider>
+      </>
+      // <SettingsDialog />
+    // </SidebarProvider>
   )
 }

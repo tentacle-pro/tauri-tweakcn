@@ -14,7 +14,6 @@
     "core:window:allow-start-dragging",
     "shell:allow-open",
     "macos-permissions:default",
-    "screenshots:default",
     {
       "identifier": "opener:allow-open-path",
       "allow": [
@@ -30,13 +29,6 @@
           "name": "run-applescript",
           "cmd": "osascript",
           "args": true
-        },
-        {
-          "name": "python-version",
-          "cmd": "/Users/dio/workspace/mamba/envs/playground/bin/python",
-          "args": [
-            "--version"
-          ]
         }
       ]
     }

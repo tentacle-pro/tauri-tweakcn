@@ -36,8 +36,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "bin/uv",
-      "bin/uvx"
+      "bin/gost"
     ],
     "macOS": {
       "dmg": {

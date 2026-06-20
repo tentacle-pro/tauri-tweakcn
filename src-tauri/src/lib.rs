@@ -18,7 +18,6 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_macos_permissions::init())
-        .plugin(tauri_plugin_screenshots::init())
         .setup(|app| {
             // 获取当前工作目录，用于调试
             let current_dir = std::env::current_dir()

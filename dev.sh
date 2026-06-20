@@ -1,1 +1,1 @@
-bun tauri dev
+bun run tauri dev
