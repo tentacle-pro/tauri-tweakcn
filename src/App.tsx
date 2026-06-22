@@ -2,6 +2,7 @@ import "./index.css";
 import { create } from "zustand"
 import { Toaster } from "@/components/ui/sonner"
 import { Player } from "./player"
+import { VoiceSession } from "@/components/voice-session/VoiceSession"
 
 // 创建一个store来管理设置对话框状态
 interface SettingsState {
@@ -24,6 +25,9 @@ export default function Page() {
       // <AppSidebar />
       <>
       <Player />
+      <div className="fixed bottom-6 right-6 z-50">
+        <VoiceSession />
+      </div>
       <Toaster />
       </>
       // <SettingsDialog />

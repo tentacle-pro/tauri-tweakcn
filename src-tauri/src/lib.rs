@@ -4,6 +4,8 @@ use std::os::unix::process::CommandExt;
 use std::os::unix::io::FromRawFd;
 use std::sync::{Arc, Mutex};
 
+mod ws_relay;
+
 /// 托管状态：持有 gost 子进程句柄，App 退出时由 RunEvent::Exit 负责 kill
 struct GostChild(Arc<Mutex<Option<std::process::Child>>>);
 
@@ -117,6 +119,18 @@ pub fn run() {
 
             // 注册到 Tauri 状态，供 RunEvent::Exit 时 kill
             app_handle.manage(GostChild(child_arc));
+
+            // 启动本地 WS 中继器：前端 ws://127.0.0.1:17891 → Gemini WSS
+            let api_key = std::env::var("GEMINI_API_KEY")
+                .unwrap_or_else(|_| {
+                    log::warn!("GEMINI_API_KEY 未设置，WS 中继不会工作");
+                    String::new()
+                });
+            if !api_key.is_empty() {
+                let key: Arc<str> = api_key.into_boxed_str().into();
+                tauri::async_runtime::spawn(ws_relay::start_local_ws_relay(key));
+                log::info!("WS 中继器后台任务已提交");
+            }
 
             Ok(())
         })
